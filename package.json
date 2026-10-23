@@ -1,0 +1,26 @@
+{
+  "name": "english-amoy-dictionary",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:lan": "vite --host",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "data:extract": "pdftotext -bbox-layout English-Amoy-Dictionary.pdf data/raw/dict-bbox.html && node scripts/extract-lines.mjs && node scripts/build-dictionary.mjs",
+    "data:build": "node scripts/build-dictionary.mjs",
+    "data:ocr": ".venv/bin/python scripts/ocr-chinese.py"
+  },
+  "dependencies": {
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.4",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.7"
+  }
+}
