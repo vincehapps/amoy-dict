@@ -27,7 +27,14 @@ interface EntryEdit {
   headword?: string;
   body?: string;
   chinese?: string;
+  /** Printed page; only set for `added` entries, which have no extracted page. */
+  page?: number;
   verified?: boolean;
+  /** Added by hand — the extractor never produced it. */
+  added?: boolean;
+  /** Removed from the dataset; `snapshot` is the entry as it was when deleted. */
+  deleted?: boolean;
+  snapshot?: Entry;
 }
 
 interface EditsDoc {
@@ -35,16 +42,19 @@ interface EditsDoc {
   entries: Record<string, EntryEdit>;
 }
 
-type QueueFilter = "unverified" | "verified" | "edited" | "all";
+type QueueFilter = "unverified" | "verified" | "edited" | "all" | "deleted";
 
 const FILTERS: { id: QueueFilter; label: string }[] = [
   { id: "unverified", label: "Unverified" },
   { id: "verified", label: "Verified" },
   { id: "edited", label: "Edited" },
   { id: "all", label: "All" },
+  { id: "deleted", label: "Deleted" },
 ];
 
 const PAGE_SIZE = 60;
+/** Printed page numbers run 1–598; the build rejects anything else. */
+const MAX_PRINTED_PAGE = 598;
 
 function hasContentEdit(edit: EntryEdit | undefined): boolean {
   return Boolean(
@@ -53,6 +63,14 @@ function hasContentEdit(edit: EntryEdit | undefined): boolean {
         edit.body !== undefined ||
         edit.chinese !== undefined),
   );
+}
+
+/** Queue-row badge: hand-added, hand-edited, or deleted. */
+function badgeFor(edit: EntryEdit | undefined): string | null {
+  if (edit?.deleted) return "deleted";
+  if (edit?.added) return "added";
+  if (hasContentEdit(edit)) return "edited";
+  return null;
 }
 
 /** Mirror of what scripts/build-dictionary.mjs does with an override. */
@@ -99,6 +117,14 @@ export default function Admin() {
   const [formVerified, setFormVerified] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveError, setSaveError] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [addForm, setAddForm] = useState({
+    headword: "",
+    page: "",
+    body: "",
+    chinese: "",
+    verified: false,
+  });
   const syncedId = useRef<string | null>(null);
 
   useEffect(() => {
@@ -154,8 +180,29 @@ export default function Admin() {
     );
   }, [data, index, letter, query]);
 
+  /**
+   * Deleted entries are gone from the dataset, so they live only as the
+   * snapshots content/edits.json keeps for them.
+   */
+  const deletedScoped = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const list: Entry[] = [];
+    for (const edit of Object.values(edits.entries)) {
+      const snap = edit.deleted ? edit.snapshot : undefined;
+      if (!snap) continue;
+      if (letter && snap.letter !== letter) continue;
+      if (q) {
+        const hay = `${snap.headword} ${snap.body} ${snap.chinese ?? ""}`.toLowerCase();
+        if (!hay.includes(q)) continue;
+      }
+      list.push(snap);
+    }
+    list.sort((a, b) => a.key.localeCompare(b.key));
+    return list;
+  }, [edits, letter, query]);
+
   const counts = useMemo(() => {
-    const c = { unverified: 0, verified: 0, edited: 0, all: 0 };
+    const c = { unverified: 0, verified: 0, edited: 0, all: 0, deleted: 0 };
     for (const entry of scoped) {
       const edit = edits.entries[entry.id];
       c.all += 1;
@@ -163,24 +210,33 @@ export default function Admin() {
       else c.unverified += 1;
       if (hasContentEdit(edit)) c.edited += 1;
     }
+    c.deleted = deletedScoped.length;
     return c;
-  }, [scoped, edits]);
+  }, [scoped, deletedScoped, edits]);
 
   const queue = useMemo(
     () =>
-      scoped.filter((entry) => {
-        const edit = edits.entries[entry.id];
-        const verified = Boolean(edit?.verified);
-        if (filter === "unverified") return !verified;
-        if (filter === "verified") return verified;
-        if (filter === "edited") return hasContentEdit(edit);
-        return true;
-      }),
-    [scoped, edits, filter],
+      filter === "deleted"
+        ? deletedScoped
+        : scoped.filter((entry) => {
+            const edit = edits.entries[entry.id];
+            const verified = Boolean(edit?.verified);
+            if (filter === "unverified") return !verified;
+            if (filter === "verified") return verified;
+            if (filter === "edited") return hasContentEdit(edit);
+            return true;
+          }),
+    [scoped, deletedScoped, edits, filter],
   );
 
-  const selectedEntry = selectedId ? byId.get(selectedId) : undefined;
   const selectedEdit = selectedId ? edits.entries[selectedId] : undefined;
+  const selectedEntry = selectedId
+    ? (byId.get(selectedId) ?? (selectedEdit?.deleted ? selectedEdit.snapshot : undefined))
+    : undefined;
+  /** A deleted entry exists only as its edits.json snapshot, not in `byId`. */
+  const selectedDeleted = Boolean(
+    selectedId && selectedEdit?.deleted && !byId.has(selectedId),
+  );
 
   const dirty = selectedEntry
     ? form.headword !== selectedEntry.headword ||
@@ -188,12 +244,15 @@ export default function Admin() {
         form.chinese !== (selectedEntry.chinese ?? "") ||
         formVerified !== Boolean(selectedEdit?.verified)
     : false;
+  const addDirty = adding && Boolean(
+    addForm.headword || addForm.page || addForm.body || addForm.chinese || addForm.verified,
+  );
 
   // Load the form when the selection changes (not when data/edits refresh
   // underneath it — after a save the form holds what the server now has).
   useEffect(() => {
     if (!selectedId || syncedId.current === selectedId) return;
-    const entry = byId.get(selectedId);
+    const entry = byId.get(selectedId) ?? edits.entries[selectedId]?.snapshot;
     if (!entry) return;
     syncedId.current = selectedId;
     setForm({
@@ -213,6 +272,7 @@ export default function Admin() {
 
   const jumpTo = useCallback((id: string) => {
     syncedId.current = null;
+    setAdding(false);
     setSelectedId(id);
     setSaveState("idle");
     setVisible(PAGE_SIZE);
@@ -221,12 +281,15 @@ export default function Admin() {
 
   const select = useCallback(
     (id: string) => {
+      if (adding && addDirty && !window.confirm("Discard the entry you are adding?")) {
+        return;
+      }
       if (dirty && id !== selectedId && !window.confirm("Discard unsaved changes?")) {
         return;
       }
       jumpTo(id);
     },
-    [dirty, selectedId, jumpTo],
+    [adding, addDirty, dirty, selectedId, jumpTo],
   );
 
   const clearSelection = useCallback(() => {
@@ -235,6 +298,16 @@ export default function Admin() {
     setSaveState("idle");
     setUrlEntry(null);
   }, []);
+
+  /** Open the add-entry form; it replaces the editor pane until saved/cancelled. */
+  const startAdd = useCallback(() => {
+    if (dirty && !window.confirm("Discard unsaved changes?")) return;
+    if (addDirty && !window.confirm("Discard the entry you are adding?")) return;
+    clearSelection();
+    setAddForm({ headword: "", page: "", body: "", chinese: "", verified: false });
+    setSaveError("");
+    setAdding(true);
+  }, [dirty, addDirty, clearSelection]);
 
   async function save(opts: { verify?: boolean } = {}) {
     if (!selectedEntry || readOnly || saveState === "saving") return;
@@ -346,6 +419,136 @@ export default function Admin() {
     }
   }
 
+  /** POST one CMS action, then re-read the rebuilt dataset. */
+  async function postAndReload(payload: unknown): Promise<{
+    edits: EditsDoc;
+    dictionary: DictionaryData;
+    id?: string;
+  }> {
+    const response = await fetch("/__api/edits", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const result = (await response.json().catch(() => ({}))) as {
+      ok?: boolean;
+      edits?: EditsDoc;
+      id?: string;
+      error?: string;
+    };
+    if (!response.ok || !result.ok) {
+      throw new Error(result.error ?? `HTTP ${response.status}`);
+    }
+    const fresh = await fetch(`${import.meta.env.BASE_URL}dictionary.json?t=${Date.now()}`);
+    if (!fresh.ok) throw new Error(`HTTP ${fresh.status}`);
+    const dictionary = (await fresh.json()) as DictionaryData;
+    return {
+      edits: result.edits ?? { version: 1, entries: {} },
+      dictionary,
+      id: result.id,
+    };
+  }
+
+  function cancelAdd() {
+    setAdding(false);
+    setSaveState("idle");
+    setSaveError("");
+  }
+
+  /** Persist a brand-new entry the extractor never produced. */
+  async function saveAdded() {
+    if (readOnly || saveState === "saving") return;
+    const headword = addForm.headword.replace(/\s+/g, " ").trim();
+    const page = Number(addForm.page);
+    if (!headword) {
+      setSaveState("error");
+      setSaveError("Headword is required.");
+      return;
+    }
+    if (!/^[A-Za-z]/.test(headword)) {
+      setSaveState("error");
+      setSaveError("Headword must start with a letter.");
+      return;
+    }
+    if (!Number.isInteger(page) || page < 1 || page > MAX_PRINTED_PAGE) {
+      setSaveState("error");
+      setSaveError(`Printed page must be a number from 1 to ${MAX_PRINTED_PAGE}.`);
+      return;
+    }
+    setSaveState("saving");
+    setSaveError("");
+    try {
+      const { edits: nextEdits, dictionary, id } = await postAndReload({
+        add: {
+          headword,
+          page,
+          body: addForm.body,
+          chinese: addForm.chinese,
+          verified: addForm.verified,
+        },
+      });
+      if (!id) throw new Error("the server did not return the new entry id");
+      setEdits(nextEdits);
+      setData(dictionary);
+      setAdding(false);
+      setAddForm({ headword: "", page: "", body: "", chinese: "", verified: false });
+      jumpTo(id);
+    } catch (err) {
+      setSaveState("error");
+      setSaveError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /**
+   * Remove an entry from the dataset. The server keeps a snapshot of it in
+   * content/edits.json, so the Deleted filter can offer it back.
+   */
+  async function deleteEntry() {
+    if (!selectedEntry || readOnly || saveState === "saving") return;
+    const id = selectedEntry.id;
+    if (
+      !window.confirm(
+        "Delete this entry from the dataset? It moves to the Deleted filter, where you can restore it.",
+      )
+    ) {
+      return;
+    }
+    // Advance to the next entry using the pre-delete order, like Save & verify.
+    const position = queue.findIndex((entry) => entry.id === id);
+    const next = position >= 0 ? queue[position + 1] : undefined;
+    setSaveState("saving");
+    setSaveError("");
+    try {
+      const { edits: nextEdits, dictionary } = await postAndReload({ id, delete: true });
+      setEdits(nextEdits);
+      setData(dictionary);
+      if (next) jumpTo(next.id);
+      else clearSelection();
+    } catch (err) {
+      setSaveState("error");
+      setSaveError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** Put a deleted entry back into the dataset, with its earlier edits. */
+  async function restoreEntry() {
+    if (!selectedEntry || readOnly || saveState === "saving") return;
+    const id = selectedEntry.id;
+    setSaveState("saving");
+    setSaveError("");
+    try {
+      const { edits: nextEdits, dictionary } = await postAndReload({ id, restore: true });
+      setEdits(nextEdits);
+      setData(dictionary);
+      syncedId.current = null;
+      jumpTo(id);
+      setSaveState("saved");
+    } catch (err) {
+      setSaveState("error");
+      setSaveError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   if (loadError) {
     return (
       <div className="status-screen">
@@ -380,7 +583,7 @@ export default function Admin() {
     : -1;
 
   return (
-    <div className={`admin${selectedEntry ? " has-selection" : ""}`}>
+    <div className={`admin${selectedEntry || adding ? " has-selection" : ""}`}>
       <header className="admin-bar">
         <div className="admin-bar-top">
           <a className="admin-exit" href="./?letter=A">
@@ -465,6 +668,14 @@ export default function Admin() {
               </option>
             ))}
           </select>
+          <button
+            type="button"
+            className="admin-add-btn"
+            onClick={startAdd}
+            disabled={readOnly || adding}
+          >
+            + Add entry
+          </button>
         </div>
       </div>
 
@@ -474,9 +685,11 @@ export default function Admin() {
             <div className="admin-empty">
               <h3>Nothing in this queue</h3>
               <p>
-                {filter === "unverified"
-                  ? "Everything in scope is verified — nice work."
-                  : "No entries match this filter."}
+                {filter === "deleted"
+                  ? "Nothing has been deleted in this scope."
+                  : filter === "unverified"
+                    ? "Everything in scope is verified — nice work."
+                    : "No entries match this filter."}
               </p>
               <button
                 type="button"
@@ -495,19 +708,23 @@ export default function Admin() {
                 {shown.map((entry, i) => {
                   const edit = edits.entries[entry.id];
                   const verified = Boolean(edit?.verified);
+                  const badge = badgeFor(edit);
                   return (
                     <li key={entry.id}>
                       <button
                         type="button"
                         className={`admin-item${entry.id === selectedId ? " is-selected" : ""}`}
+                        data-deleted={edit?.deleted ? "true" : undefined}
                         onClick={() => select(entry.id)}
                         aria-current={entry.id === selectedId ? "true" : undefined}
                       >
                         <span className="admin-item-main">
                           <span className="admin-item-headword">
                             {entry.headword}
-                            {hasContentEdit(edit) ? (
-                              <em className="admin-item-edited">edited</em>
+                            {badge ? (
+                              <em className="admin-item-edited" data-badge={badge}>
+                                {badge}
+                              </em>
                             ) : null}
                           </span>
                           {entry.chinese ? (
@@ -551,7 +768,196 @@ export default function Admin() {
         </section>
 
         <section className="admin-editor" aria-label="Entry editor">
-          {selectedEntry ? (
+          {adding ? (
+            <div className="admin-editor-inner">
+              <div className="admin-editor-top">
+                <button className="admin-back" type="button" onClick={cancelAdd}>
+                  ← Queue
+                </button>
+                <span className="admin-editor-pos">New entry</span>
+                <span className="admin-editor-status">Draft</span>
+              </div>
+
+              <div className="admin-editor-heading">
+                <h2>{addForm.headword.trim() || "Add an entry"}</h2>
+                {addForm.page ? (
+                  <span className="admin-editor-page">printed page {addForm.page}</span>
+                ) : null}
+              </div>
+
+              <label className="admin-field">
+                <span>Headword</span>
+                <input
+                  type="text"
+                  value={addForm.headword}
+                  onChange={(event) =>
+                    setAddForm((prev) => ({ ...prev, headword: event.target.value }))
+                  }
+                  placeholder="e.g. Abatis"
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+                <small>The entry the extractor missed — it must start with a letter.</small>
+              </label>
+
+              <label className="admin-field">
+                <span>Printed page</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={MAX_PRINTED_PAGE}
+                  value={addForm.page}
+                  onChange={(event) =>
+                    setAddForm((prev) => ({ ...prev, page: event.target.value }))
+                  }
+                />
+                <small>
+                  Number as printed on the page (1–{MAX_PRINTED_PAGE}); it drives
+                  the scan link.
+                </small>
+              </label>
+
+              <label className="admin-field">
+                <span>Gloss / romanization</span>
+                <textarea
+                  rows={5}
+                  value={addForm.body}
+                  onChange={(event) =>
+                    setAddForm((prev) => ({ ...prev, body: event.target.value }))
+                  }
+                />
+              </label>
+
+              <label className="admin-field">
+                <span>Chinese characters</span>
+                <textarea
+                  className="admin-chinese-input"
+                  lang="zh-Hant"
+                  rows={2}
+                  value={addForm.chinese}
+                  onChange={(event) =>
+                    setAddForm((prev) => ({ ...prev, chinese: event.target.value }))
+                  }
+                  placeholder="算盤 算盤子"
+                />
+              </label>
+
+              <label className="admin-verify">
+                <input
+                  type="checkbox"
+                  checked={addForm.verified}
+                  onChange={(event) =>
+                    setAddForm((prev) => ({ ...prev, verified: event.target.checked }))
+                  }
+                />
+                <span>
+                  Verified — I checked this entry against the original scan
+                </span>
+              </label>
+
+              <p className="admin-save-status" aria-live="polite">
+                {saveState === "saving" ? "Saving…" : null}
+                {saveState === "error" ? `Error: ${saveError}` : null}
+              </p>
+
+              <div className="admin-actions">
+                <button
+                  type="button"
+                  className="admin-save admin-save-primary"
+                  onClick={saveAdded}
+                  disabled={readOnly || saveState === "saving"}
+                >
+                  Add entry →
+                </button>
+                <button
+                  type="button"
+                  className="admin-nav"
+                  onClick={cancelAdd}
+                  disabled={saveState === "saving"}
+                >
+                  Cancel
+                </button>
+              </div>
+
+              <div className="admin-editor-foot">
+                <span className="admin-editor-note">
+                  Added entries live in <code>content/edits.json</code> like every
+                  other edit — commit that file to keep them.
+                </span>
+              </div>
+            </div>
+          ) : selectedEntry && selectedDeleted ? (
+            <div className="admin-editor-inner">
+              <div className="admin-editor-top">
+                <button
+                  className="admin-back"
+                  type="button"
+                  onClick={clearSelection}
+                >
+                  ← Queue
+                </button>
+                <span className="admin-editor-pos">
+                  {queuePosition >= 0
+                    ? `${(queuePosition + 1).toLocaleString()} of ${queue.length.toLocaleString()} in queue`
+                    : "Not in the current filter"}
+                </span>
+                <span className="admin-editor-status">Deleted</span>
+              </div>
+
+              <div className="admin-editor-heading">
+                <h2>{selectedEntry.headword}</h2>
+                <span className="admin-editor-page">
+                  printed page {selectedEntry.page}
+                </span>
+                <a
+                  className="source-link"
+                  href={scanUrl(selectedEntry)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open scan ↗
+                </a>
+              </div>
+
+              {selectedEntry.chinese ? (
+                <div className="admin-field">
+                  <span>Chinese characters</span>
+                  <p className="admin-deleted-body" lang="zh-Hant">
+                    {selectedEntry.chinese}
+                  </p>
+                </div>
+              ) : null}
+
+              <div className="admin-field">
+                <span>Gloss / romanization</span>
+                <p className="admin-deleted-body">{selectedEntry.body || "—"}</p>
+              </div>
+
+              <p className="admin-save-status" aria-live="polite">
+                {saveState === "saving" ? "Saving…" : null}
+                {saveState === "saved" ? "Saved ✓" : null}
+                {saveState === "error" ? `Error: ${saveError}` : null}
+              </p>
+
+              <div className="admin-actions">
+                <button
+                  type="button"
+                  className="admin-save admin-save-primary"
+                  onClick={restoreEntry}
+                  disabled={readOnly || saveState === "saving"}
+                >
+                  Restore entry
+                </button>
+              </div>
+
+              <div className="admin-editor-foot">
+                <span className="admin-editor-note">
+                  Removed from the dataset; restoring puts it back, along with
+                  any earlier edits.
+                </span>
+              </div>
+            </div>
+          ) : selectedEntry ? (
             <div
               className="admin-editor-inner"
               data-admin-form={dirty ? "dirty" : undefined}
@@ -690,7 +1096,12 @@ export default function Admin() {
               </div>
 
               <div className="admin-editor-foot">
-                {selectedEdit && Object.keys(selectedEdit).length > 0 ? (
+                {selectedEdit?.added ? (
+                  <span className="admin-editor-note">
+                    Added by hand — there is no extracted text to restore, so
+                    remove it with Delete instead.
+                  </span>
+                ) : selectedEdit && Object.keys(selectedEdit).length > 0 ? (
                   <button
                     type="button"
                     className="admin-discard"
@@ -704,6 +1115,14 @@ export default function Admin() {
                     Showing extracted text — no manual edits yet.
                   </span>
                 )}
+                <button
+                  type="button"
+                  className="admin-delete"
+                  onClick={deleteEntry}
+                  disabled={readOnly || saveState === "saving"}
+                >
+                  Delete entry
+                </button>
               </div>
             </div>
           ) : (
@@ -722,6 +1141,14 @@ export default function Admin() {
                 saved into <code>content/edits.json</code> — commit that file to
                 version them.
               </p>
+              <button
+                type="button"
+                className="admin-add-btn admin-placeholder-add"
+                onClick={startAdd}
+                disabled={readOnly}
+              >
+                + Add a missing entry
+              </button>
               <p className="admin-placeholder-meta">
                 {queue.length.toLocaleString()} entries in the current queue
               </p>

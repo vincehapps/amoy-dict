@@ -1211,6 +1211,19 @@ a {
   text-transform: uppercase;
 }
 
+.admin-item-edited[data-badge="deleted"] {
+  padding: 1px 6px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+}
+
+.admin-item[data-deleted="true"] .admin-item-headword {
+  color: var(--ink-faint);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
 .admin-item-chinese {
   display: block;
   overflow: hidden;
@@ -1521,9 +1534,35 @@ a {
 }
 
 .admin-editor-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
   margin-top: 14px;
   padding-top: 12px;
   border-top: 1px solid var(--line);
+}
+
+.admin-delete {
+  min-height: 40px;
+  padding: 8px 14px;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  color: var(--accent-ink);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.admin-delete:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.admin-delete:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .admin-discard {
@@ -1577,6 +1616,50 @@ a {
   color: var(--ink-faint) !important;
   font-family: var(--mono);
   font-size: 0.72rem !important;
+}
+
+/* Add entries / deleted entries ------------------------------------------- */
+
+.admin-add-btn {
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding: 8px 14px;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--paper-raised);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.admin-add-btn:hover:not(:disabled) {
+  background: var(--accent-ink);
+  border-color: var(--accent-ink);
+}
+
+.admin-add-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.admin-placeholder-add {
+  display: inline-block;
+  margin: 2px 0 16px;
+}
+
+.admin-deleted-body {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.95rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.admin-deleted-body[lang="zh-Hant"] {
+  font-family: var(--serif);
+  font-size: 1.25rem;
+  letter-spacing: 0.08em;
 }
 
 /* Admin, desktop: queue and editor side by side --------------------------- */

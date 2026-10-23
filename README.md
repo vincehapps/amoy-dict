@@ -62,6 +62,11 @@ npm run dev
 - Pick an entry to compare it with the **Open scan ↗** link, fix the headword,
   Chinese characters, or gloss, and tick **Verified** when it matches the page.
 - **Save & verify →** writes the correction and advances to the next entry.
+- **+ Add entry** records an entry the extractor missed — headword, printed
+  page, gloss and Chinese characters — and **Delete entry** removes a spurious
+  one. Deleted entries move to the **Deleted** filter, where **Restore entry**
+  puts them back along with any earlier edits. Both are ordinary
+  `content/edits.json` records, so re-running `npm run data:build` keeps them.
 
 Every save writes to [`content/edits.json`](content/edits.json) — the one
 file that is the CMS's content — and re-runs the dataset build, so the served

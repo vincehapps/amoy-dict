@@ -295,7 +295,7 @@ fs.writeFileSync(
 
 // Dedupe ids, normalize, and drop obvious noise.
 const seen = new Map();
-const output = [];
+let output = [];
 for (const e of entries) {
   const headword = e.headword.replace(/\s+/g, " ").trim();
   if (!headword) continue;
@@ -347,7 +347,8 @@ for (const e of entries) {
 // Manual corrections live in content/edits.json — the git-tracked content of
 // the admin CMS. Overrides are applied by id after extraction, so rerunning
 // this build never loses reviewed edits. `verified` marks an entry a human
-// has checked against the scan.
+// has checked against the scan. The file also carries entries the extractor
+// missed (`added`) and entries the reviewer removed (`deleted`).
 const EDITS_SRC = "content/edits.json";
 let editsDoc = { version: 1, entries: {} };
 if (fs.existsSync(EDITS_SRC)) {
@@ -359,9 +360,16 @@ if (fs.existsSync(EDITS_SRC)) {
 }
 const edits = editsDoc.entries ?? {};
 let editedCount = 0;
+const deletedIds = new Set();
 for (const entry of output) {
   const edit = edits[entry.id];
   if (!edit || typeof edit !== "object") continue;
+  // A deleted entry leaves the dataset entirely; the admin keeps a snapshot
+  // of it in the same record so it can still be listed and restored.
+  if (edit.deleted) {
+    deletedIds.add(entry.id);
+    continue;
+  }
   editedCount++;
   if (typeof edit.headword === "string" && edit.headword.trim()) {
     entry.headword = edit.headword.trim();
@@ -374,6 +382,46 @@ for (const entry of output) {
     else delete entry.chinese;
   }
   if (edit.verified) entry.verified = true;
+}
+output = output.filter((entry) => !deletedIds.has(entry.id));
+
+// Entries added by hand in the admin never come out of the PDF, so they are
+// rebuilt from their edit record with the same shape as extracted ones.
+for (const [id, edit] of Object.entries(edits)) {
+  if (!edit || typeof edit !== "object" || !edit.added || edit.deleted) continue;
+  if (output.some((entry) => entry.id === id)) {
+    console.warn(`warning: added entry "${id}" collides with an extracted entry; keeping the extracted one`);
+    continue;
+  }
+  const headword =
+    typeof edit.headword === "string" ? edit.headword.replace(/\s+/g, " ").trim() : "";
+  if (!headword) {
+    console.warn(`warning: added entry "${id}" has no headword; skipping`);
+    continue;
+  }
+  const letter = headword[0].toUpperCase();
+  if (!/[A-Z]/.test(letter)) {
+    console.warn(`warning: added entry "${id}" must start with a letter; skipping`);
+    continue;
+  }
+  const page = Number.isInteger(edit.page) && edit.page > 0 ? edit.page : 0;
+  if (!page) console.warn(`warning: added entry "${id}" has no printed page; its scan link will be wrong`);
+  const body = typeof edit.body === "string" ? edit.body : "";
+  const chinese = typeof edit.chinese === "string" ? edit.chinese.trim() : "";
+  const key =
+    headword.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || id;
+  output.push({
+    id,
+    headword,
+    key,
+    letter,
+    page,
+    scanPage: page + PAGE_OFFSET,
+    body,
+    ...(chinese ? { chinese } : {}),
+    ...(edit.verified ? { verified: true } : {}),
+  });
+  editedCount++;
 }
 
 // The scan's text layer occasionally scrambles the order of nearby lines;
