@@ -3,8 +3,31 @@
   "entries": {
     "a": {
       "headword": "A, an",
-      "body": "tsit, it.",
+      "body": "tsít, it.",
       "chinese": "一",
+      "verified": true
+    },
+    "aback": {
+      "headword": "Aback",
+      "body": "R] nig au, 5i t6 the, taken as ship, fS phah phng thu.",
+      "chinese": "向後，到退， 打邃頭"
+    },
+    "abacus": {
+      "headword": "Abacus",
+      "body": "sǹg -poâⁿ, (balls of abacus) sǹg -poâⁿ-tsí, (rod of abacus) sǹg-poâⁿ kì",
+      "chinese": "算盤，算盤子，算盤棍",
+      "verified": true
+    },
+    "abaft": {
+      "headword": "Abaft",
+      "body": "tsûn-bé",
+      "chinese": "船尾",
+      "verified": true
+    },
+    "abandon": {
+      "headword": "Abandon",
+      "body": "pàng-sak, khì-sak, kù-tsoát, khì-tsoát.",
+      "chinese": "放却，棄却，拒絕，棄絕",
       "verified": true
     }
   }
